@@ -10,9 +10,10 @@ from fastapi import Request
 from adapters.base_adapter import BaseAdapter
 
 MIN_ELAPSED_TIME = 0.02
-
+MAX_EXTRA_REQUESTS = 3  # 最大额外请求次数
 
 class AIProAdapter(BaseAdapter):
+    # ... (省略了你的其他函数和初始化代码)
     def __init__(self, password, proxy):
         self.password = password
         self.last_time = None
@@ -113,7 +114,6 @@ class AIProAdapter(BaseAdapter):
             if elapsed_time < MIN_ELAPSED_TIME:
                 await asyncio.sleep(MIN_ELAPSED_TIME - elapsed_time)
         self.last_time = time.time()
-
     async def chat(self, request: Request):
         openai_params = await request.json()
         headers = request.headers
@@ -132,6 +132,7 @@ class AIProAdapter(BaseAdapter):
             raise Exception(f"Error: 密钥无效")
 
         headers = {
+            # ... (省略了你的其他header设置)
             'Host': 'chatpro.ai-pro.org',
             'sec-ch-ua': '"Chromium";v="124", "Microsoft Edge";v="124", "Not-A.Brand";v="99"',
             'content-type': 'application/json',
@@ -208,11 +209,33 @@ class AIProAdapter(BaseAdapter):
 
                             yield self.to_openai_response_stream(model=model, content=new_text)
                             await self.rate_limit()
+                    
+                    # 在循环结束后检查 last_text
+                    extra_requests = 0  # 初始化额外请求次数
+                    while not last_text.endswith(('.', '!', '?', '。', '！', '？')) and extra_requests < MAX_EXTRA_REQUESTS:
+                        # 如果 last_text 不以结束符号结尾，再次发起请求
+                        response = await client.post(
+                            url=api_url,
+                            headers=headers,
+                            json=json_data,
+                        )
+                        if response.is_error:
+                            raise Exception(f"Error: {response.status_code}")
+                        pattern = r'"sender":"(ChatGPT|PaLM2)","text":"([^"]+)"'
+                        match = re.search(pattern, response.text)
+                        if match:
+                            text = match.group(2)
+                            print(text)
+                            yield self.to_openai_response(model=model, content=text)
+                        else:
+                            raise Exception(f"No match found")
+                        extra_requests += 1  # 更新额外请求次数
 
                     await asyncio.sleep(1)
                     yield self.to_openai_response_stream_end(model=model)
                     yield "[DONE]"
 
+    # ... (省略了你的其他函数)
     def take(self, raw_data: str) -> str:
         json_data = None
 
